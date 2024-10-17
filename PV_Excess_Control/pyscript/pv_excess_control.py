@@ -143,6 +143,7 @@ def reset_midnight():
         inst.switched_on_today = False
         inst.enforce_minimum_run = False
         inst.daily_run_time = 0
+        inst.force_off = False
 
 @time_trigger("cron(0 21 * * *)")
 def enforce_runtime():
@@ -151,11 +152,21 @@ def enforce_runtime():
         inst = e['instance']
         run_time_min = inst.daily_run_time / 60
         log.info(f'{inst.log_prefix} Ran for {run_time_min:.1f} out of {inst.appliance_minimum_run_time:.1f} minutes')
+
+        inst.force_off = False
+
         if run_time_min < inst.appliance_minimum_run_time:
             log.info(f'{inst.log_prefix} Enforcing minimum runtime')
             inst.enforce_minimum_run = True
         else:
             log.info(f'{inst.log_prefix} Application ran long enough, no minimum enforcement')
+
+@time_trigger("cron(0 16 * * *)")
+def stop_at_peak():
+    log.info("Stopping jobs at 4PM")
+    for e in PvExcessControl.instances.copy().values():
+        inst = e['instance']
+        inst.force_off = True
 
 @service
 def pv_excess_control(automation_id, appliance_priority, export_power, pv_power, load_power, home_battery_level,
@@ -241,6 +252,7 @@ class PvExcessControl:
         self.appliance_maximum_run_time = appliance_maximum_run_time
         self.appliance_minimum_run_time = appliance_minimum_run_time
         self.enforce_minimum_run = False
+        self.force_off = False
 
         self.phases = appliance_phases
 
@@ -280,6 +292,12 @@ class PvExcessControl:
 
                 # Check if automation is activated for specific instance
                 if not self.automation_activated(inst.automation_id):
+                    continue
+
+                if inst.force_off:
+                    if _get_state(inst.appliance_switch) == 'on':
+                        log.debug("Device has been forced off")
+                        self.switch_off(inst)
                     continue
 
                 # Check to see if we are enforcing the minimum run time
@@ -646,7 +664,7 @@ class PvExcessControl:
         remaining_forecast = _get_num_state(PvExcessControl.solar_production_forecast, return_on_error=0)
 
         sunset_string = _get_state(PvExcessControl.time_of_sunset)
-        sunset_time = datetime.datetime.fromisoformat(sunset_string)
+        sunset_time = datetime.datetime.now(datetime.timezone.utc).replace(hour=16, minute=0)
         time_now = datetime.datetime.now(datetime.timezone.utc)
         time_of_sunset = (sunset_time - time_now).total_seconds() / (60 * 60)
 
